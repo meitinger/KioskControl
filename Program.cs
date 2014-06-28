@@ -21,7 +21,6 @@ using System.Runtime.InteropServices;
 using System.ServiceModel.Web;
 using System.Windows.Forms;
 using System.Xml;
-using Aufbauwerk.Tools.KioskControl.Properties;
 using RDPCOMAPILib;
 
 namespace Aufbauwerk.Tools.KioskControl
@@ -43,7 +42,7 @@ namespace Aufbauwerk.Tools.KioskControl
                 if (sd == IntPtr.Zero || sdCurrentTime > sdTime)
                 {
                     // convert the string to sd and set the current time
-                    var settings = Settings.Default;
+                    var settings = Properties.Settings.Default;
                     settings.Reload();
                     var newSd = sd;
                     var size = 0;
@@ -81,7 +80,7 @@ namespace Aufbauwerk.Tools.KioskControl
                     Win32.LocalFree(strPtr);
                     var settings = new XmlDocument();
                     settings.Load(configFile);
-                    settings.SelectSingleNode(string.Format(@"/configuration/applicationSettings/{0}/setting[@name='Security']/value", typeof(Settings).FullName)).InnerText = str;
+                    settings.SelectSingleNode(string.Format(@"/configuration/applicationSettings/{0}/setting[@name='Security']/value", typeof(Properties.Settings).FullName)).InnerText = str;
                     settings.Save(configFile);
                     try { sdCurrentTime = File.GetLastWriteTimeUtc(configFile); }
                     catch { }

@@ -181,7 +181,7 @@ namespace Aufbauwerk.Tools.KioskControl
                     accessRightsList.Add(new Win32.SI_ACCESS()
                     {
                         pguid = IntPtr.Zero,
-                        mask = (uint)right,
+                        mask = (uint)(SessionRights)right,
                         pszName = Marshal.StringToHGlobalUni(Enum.GetName(typeof(SessionRights), right)),
                         dwFlags = Win32.SI_ACCESS_SPECIFIC
                     });
