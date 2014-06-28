@@ -30,7 +30,7 @@ The following settings can be configured in the `KioskControl.exe.config` file:
   `/editsecurity` switch, which displays the familiar Windows security dialog.
 - *ConnectionTimeout*: The amount of time a client has before its token becomes
   invalid.
-- *DisconnectText*: The message that is displayed if the connection gets lost.
+- *DisconnectedText*: The message that is displayed if the connection is lost.
 
 The *Windows Communication Framework* configuration is also stored within this
 file. This part specified how the client authenticates (either `Ntlm` or
