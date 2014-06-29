@@ -31,7 +31,7 @@ namespace Aufbauwerk.Tools.KioskControl
         public const ushort SE_SELF_RELATIVE = 0x8000;
         public const ushort SE_DACL_PRESENT = 0x0004;
         public const uint MAXIMUM_ALLOWED = 0x02000000;
-        public const int ERROR_INVALID_SECURITY_DESCR = 1338;
+        public const uint LMEM_FIXED = 0x0000;
 
         [DllImport("advapi32", ExactSpelling = true)]
         public static extern int GetSecurityDescriptorLength
@@ -62,19 +62,10 @@ namespace Aufbauwerk.Tools.KioskControl
             IntPtr ClientToken,
             uint DesiredAccess,
             ref GENERIC_MAPPING GenericMapping,
-            IntPtr PrivilegeSet,
+            ref PRIVILEGE_SET PrivilegeSet,
             ref int PrivilegeSetLength,
             out uint GrantedAccess,
             out bool AccessStatus
-        );
-
-        [DllImport("advapi32", CharSet = CharSet.Auto, SetLastError = true)]
-        public static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor
-        (
-            string StringSecurityDescriptor,
-            uint StringSDRevision,
-            out IntPtr SecurityDescriptor,
-            out int SecurityDescriptorSize
         );
 
         [DllImport("advapi32", CharSet = CharSet.Auto, SetLastError = true)]
@@ -121,6 +112,28 @@ namespace Aufbauwerk.Tools.KioskControl
             ref uint AccessMask,
             ref GENERIC_MAPPING GenericMapping
         );
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct LUID
+        {
+            public uint LowPart;
+            public int HighPart;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct LUID_AND_ATTRIBUTES
+        {
+            public LUID Luid;
+            public uint Attributes;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct PRIVILEGE_SET
+        {
+            public int PrivilegeCount;
+            public uint Control;
+            public LUID_AND_ATTRIBUTES Privilege;
+        }
 
         [StructLayout(LayoutKind.Sequential)]
         public struct GENERIC_MAPPING

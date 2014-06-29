@@ -18,6 +18,8 @@ using System;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.ServiceModel.Web;
 using System.Windows.Forms;
 using System.Xml;
@@ -31,61 +33,71 @@ namespace Aufbauwerk.Tools.KioskControl
         static IntPtr sd = IntPtr.Zero;
         static DateTime sdTime;
 
+        static void ReloadSecurityDescriptor()
+        {
+            // convert the string to managed sd
+            var settings = Properties.Settings.Default;
+            settings.Reload();
+            var rawSd = new RawSecurityDescriptor(settings.Security);
+            using (var identity = WindowsIdentity.GetCurrent())
+            {
+                rawSd.Owner = identity.User;
+                rawSd.Group = (SecurityIdentifier)identity.Groups[0].Translate(typeof(SecurityIdentifier));
+            }
+
+            // convert the managed sd into local heap buffer
+            var buffer = new byte[rawSd.BinaryLength];
+            rawSd.GetBinaryForm(buffer, 0);
+            var newSd = Win32.LocalAlloc(Win32.LMEM_FIXED, buffer.Length);
+            if (newSd == IntPtr.Zero)
+                throw new Win32Exception();
+            Marshal.Copy(buffer, 0, newSd, buffer.Length);
+            sd = newSd; // NOTE: we are leaking here, but since the config file won't change a lot it's ok
+            sdTime = DateTime.UtcNow;
+        }
+
         internal static IntPtr SecurityDescriptor
         {
             get
             {
-                // check if the security has changed or has never been queried
-                var sdCurrentTime = sdTime;
-                try { sdCurrentTime = File.GetLastWriteTimeUtc(configFile); }
-                catch { }
-                if (sd == IntPtr.Zero || sdCurrentTime > sdTime)
+                // check if there already is an sd
+                if (sd != IntPtr.Zero)
                 {
-                    // convert the string to sd and set the current time
-                    var settings = Properties.Settings.Default;
-                    settings.Reload();
-                    var newSd = sd;
-                    var size = 0;
-                    if (Win32.ConvertStringSecurityDescriptorToSecurityDescriptor(settings.Security, Win32.SDDL_REVISION_1, out newSd, out size))
+                    try
                     {
-                        // free the old sd and set the new one
-                        if (sd != IntPtr.Zero)
-                            Win32.LocalFree(sd);
-                        sd = newSd;
+                        // try to reload it if necessary
+                        if (File.GetLastWriteTimeUtc(configFile) > sdTime)
+                            ReloadSecurityDescriptor();
                     }
-                    else
-                    {
-                        // throw an error if there's no older valid sd
-                        if (sd == IntPtr.Zero)
-                            throw new Win32Exception();
-                    }
-                    sdTime = sdCurrentTime;
+                    catch { }
                 }
+                else
+                    // load the sd
+                    ReloadSecurityDescriptor();
                 return sd;
             }
 
             set
             {
-                // set the sd and try to convert it into a string
+                // check the sd and convert it into a string
                 if (value == IntPtr.Zero)
                     throw new ArgumentNullException("SecurityDescriptor");
-                sd = value;
+                var str = string.Empty;
                 var strPtr = IntPtr.Zero;
                 var strLen = 0;
-                var sdCurrentTime = DateTime.Now;
-                if (Win32.ConvertSecurityDescriptorToStringSecurityDescriptor(value, Win32.SDDL_REVISION_1, Win32.DACL_SECURITY_INFORMATION, out strPtr, out strLen))
-                {
-                    // get the managed string and store it within the config file
-                    var str = Marshal.PtrToStringAuto(strPtr, strLen).TrimEnd('\0');
-                    Win32.LocalFree(strPtr);
-                    var settings = new XmlDocument();
-                    settings.Load(configFile);
-                    settings.SelectSingleNode(string.Format(@"/configuration/applicationSettings/{0}/setting[@name='Security']/value", typeof(Properties.Settings).FullName)).InnerText = str;
-                    settings.Save(configFile);
-                    try { sdCurrentTime = File.GetLastWriteTimeUtc(configFile); }
-                    catch { }
-                }
-                sdTime = sdCurrentTime;
+                if (!Win32.ConvertSecurityDescriptorToStringSecurityDescriptor(value, Win32.SDDL_REVISION_1, Win32.DACL_SECURITY_INFORMATION, out strPtr, out strLen))
+                    throw new Win32Exception();
+                try { str = Marshal.PtrToStringAuto(strPtr, strLen).TrimEnd('\0'); }
+                finally { Win32.LocalFree(strPtr); }
+
+                // store the security string
+                var settings = new XmlDocument();
+                settings.Load(configFile);
+                settings.SelectSingleNode(string.Format(@"/configuration/applicationSettings/{0}/setting[@name='Security']/value", typeof(Properties.Settings).FullName)).InnerText = str;
+                settings.Save(configFile);
+
+                // reload the sd
+                ReloadSecurityDescriptor();
             }
         }
 

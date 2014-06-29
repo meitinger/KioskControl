@@ -65,7 +65,7 @@ namespace Aufbauwerk.Tools.KioskControl
 
             // allocate the necessary space
             var len = Win32.GetSecurityDescriptorLength(sd);
-            var clone = Win32.LocalAlloc(0, len);
+            var clone = Win32.LocalAlloc(Win32.LMEM_FIXED, len);
             if (clone == IntPtr.Zero)
                 throw new Win32Exception();
 
@@ -84,15 +84,17 @@ namespace Aufbauwerk.Tools.KioskControl
                 throw new ArgumentNullException("clientToken");
 
             // if there is no dacl, grant everything
-            if ((GetSDControl(Program.SecurityDescriptor) & Win32.SE_DACL_PRESENT) == 0)
+            var sd = Program.SecurityDescriptor;
+            if ((GetSDControl(sd) & Win32.SE_DACL_PRESENT) == 0)
                 return (SessionRights)genericMapping.GenericAll;
 
             // get the maximum allowed permissions
             var mapping = genericMapping;
-            var dummy = 0;
+            var dummy = new Win32.PRIVILEGE_SET();
+            var dummyLen = Marshal.SizeOf(typeof(Win32.PRIVILEGE_SET));
             var granted = 0U;
             var result = false;
-            if (!Win32.AccessCheck(Program.SecurityDescriptor, clientToken, Win32.MAXIMUM_ALLOWED, ref mapping, IntPtr.Zero, ref dummy, out granted, out result) && Marshal.GetLastWin32Error() != Win32.ERROR_INVALID_SECURITY_DESCR)
+            if (!Win32.AccessCheck(sd, clientToken, Win32.MAXIMUM_ALLOWED, ref mapping, ref dummy, ref dummyLen, out granted, out result))
                 throw new Win32Exception();
             return result ? (SessionRights)granted : 0;
         }
