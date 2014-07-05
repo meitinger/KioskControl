@@ -21,6 +21,15 @@ specified in the config file, which is described in the following section.
 
 Note: Append `view` or `interact` after the base address to specify the control
 level. If nothing is appended, the highest granted level is used.
+Also, the ActiveX control needs to be flagged as *safe for scripting*. (You
+could also adjust the Internet Explorer settings, but that's not recommended:
+http://blogs.technet.com/b/fdcc/archive/2011/11/03/enabling-initialize-and-script-activex-controls-not-marked-as-safe-in-any-zone-can-get-you-hurt-bad.aspx)
+To do so, create the following registry keys (#3 and #4 only apply to amd64):
+
+    HKEY_CLASSES_ROOT\CLSID\{32be5ed2-5c86-480f-a914-0ff8885a1b3f}\Implemented Categories\{7DD95801-9882-11CF-9FA9-00AA006C42C4}
+	HKEY_CLASSES_ROOT\CLSID\{32be5ed2-5c86-480f-a914-0ff8885a1b3f}\Implemented Categories\{7DD95802-9882-11CF-9FA9-00AA006C42C4}
+	HKEY_CLASSES_ROOT\Wow6432Node\CLSID\{32be5ed2-5c86-480f-a914-0ff8885a1b3f}\Implemented Categories\{7DD95801-9882-11CF-9FA9-00AA006C42C4}
+	HKEY_CLASSES_ROOT\Wow6432Node\CLSID\{32be5ed2-5c86-480f-a914-0ff8885a1b3f}\Implemented Categories\{7DD95802-9882-11CF-9FA9-00AA006C42C4}
 
 Configuration
 -------------
