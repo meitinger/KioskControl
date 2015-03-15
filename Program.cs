@@ -17,6 +17,7 @@
 using System;
 using System.ComponentModel;
 using System.IO;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -29,7 +30,7 @@ namespace Aufbauwerk.Tools.KioskControl
 {
     static class Program
     {
-        static readonly string configFile = AppDomain.CurrentDomain.SetupInformation.ConfigurationFile;
+        static string configFile = null;
         static IntPtr sd = IntPtr.Zero;
         static DateTime sdTime;
 
@@ -60,6 +61,10 @@ namespace Aufbauwerk.Tools.KioskControl
         {
             get
             {
+                // ensure initialized
+                if (configFile == null)
+                    throw new InvalidOperationException();
+
                 // check if there already is an sd
                 if (sd != IntPtr.Zero)
                 {
@@ -79,6 +84,10 @@ namespace Aufbauwerk.Tools.KioskControl
 
             set
             {
+                // ensure initialized
+                if (configFile == null)
+                    throw new InvalidOperationException();
+
                 // check the sd and convert it into a string
                 if (value == IntPtr.Zero)
                     throw new ArgumentNullException("SecurityDescriptor");
@@ -110,8 +119,38 @@ namespace Aufbauwerk.Tools.KioskControl
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
 
-                // either show the edit security dialog if requested
-                if (args.Length == 1 && args[0].Trim().Equals("/editsecurity", StringComparison.InvariantCultureIgnoreCase))
+                // parse the args
+                bool showSecurityDialog = false;
+                string paramShowSecurityDialog = "/editsecurity";
+                string overrideConfig = null;
+                string paramOverrideConfig = "/useconfiguration:";
+                foreach (var arg in args)
+                {
+                    if (arg.Equals(paramShowSecurityDialog, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (!showSecurityDialog)
+                        {
+                            showSecurityDialog = true;
+                            continue;
+                        }
+                    }
+                    if (arg.StartsWith(paramOverrideConfig, StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (overrideConfig == null)
+                        {
+                            overrideConfig = arg.Substring(paramOverrideConfig.Length);
+                            continue;
+                        }
+                    }
+                    MessageBox.Show(string.Format("{0} [{1}] [{2}]\n\n\n\n{1}\t\tDisplays the security dialog.\n\n{2}\tUse an alternative app config file.", Environment.GetCommandLineArgs()[0], paramShowSecurityDialog, paramOverrideConfig + "<path>"), "Usage", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
+                // set the config file and show the security dialog if requested
+                if (overrideConfig != null)
+                    ((AppDomainSetup)typeof(AppDomain).GetProperty("FusionStore", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(AppDomain.CurrentDomain, null)).ConfigurationFile = overrideConfig;
+                configFile = AppDomain.CurrentDomain.SetupInformation.ConfigurationFile;
+                if (showSecurityDialog)
                 {
                     Security.ShowEditDialog();
                     return;

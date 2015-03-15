@@ -43,8 +43,8 @@ The following settings can be configured in the `KioskControl.exe.config` file:
 
 The *Windows Communication Framework* configuration is also stored within this
 file. This part specified how the client authenticates (either `Ntlm` or
-`Windows` is required - use the former if the user is logged on with a guest
-account) and where it should listen for incoming connections. (Remember to
+`Windows` is required - make sure to set the `HTTP/<fqdn>` SPN when using the
+latter) and where it should listen for incoming connections. (Remember to
 [register](http://msdn.microsoft.com/en-us/library/ms733768(v=vs.90).aspx) the
 namespace and to poke the necessary holes into the firewall.)
 
