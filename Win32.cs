@@ -1,4 +1,4 @@
-﻿/* Copyright (C) 2014, Manuel Meitinger
+﻿/* Copyright (C) 2014-2015, Manuel Meitinger
  * 
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,23 +15,55 @@
  */
 
 using System;
+using System.Runtime.ConstrainedExecution;
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 
 namespace Aufbauwerk.Tools.KioskControl
 {
     static class Win32
     {
+        public sealed class SafeProcessHandle : SafeHandleZeroOrMinusOneIsInvalid
+        {
+            SafeProcessHandle() : base(true) { }
+
+            protected override bool ReleaseHandle()
+            {
+                return CloseHandle(handle);
+            }
+        }
+
         public const uint SI_EDIT_PERMS = 0x00000000;
         public const uint SI_ADVANCED = 0x00000010;
         public const uint SI_NO_ACL_PROTECT = 0x00000200;
         public const uint DACL_SECURITY_INFORMATION = 0x00000004;
-        public const uint SDDL_REVISION_1 = 1;
         public const uint SI_ACCESS_GENERAL = 0x00020000;
         public const uint SI_ACCESS_SPECIFIC = 0x00010000;
         public const ushort SE_SELF_RELATIVE = 0x8000;
         public const ushort SE_DACL_PRESENT = 0x0004;
         public const uint MAXIMUM_ALLOWED = 0x02000000;
         public const uint LMEM_FIXED = 0x0000;
+        public const int PROCESS_TERMINATE = 0x0001;
+        public const uint WRITE_DAC =0x00040000;
+        public const uint READ_CONTROL = 0x00020000;
+
+        [ReliabilityContract(Consistency.WillNotCorruptState, Cer.Success)]
+        [DllImport("kernel32", ExactSpelling = true, SetLastError = true)]
+        public static extern bool CloseHandle
+        (
+            IntPtr hObject
+        );
+
+        [DllImport("kernel32", ExactSpelling = true, SetLastError = true)]
+        public static extern SafeProcessHandle OpenProcess
+        (
+            uint dwDesiredAccess,
+            bool bInheritHandle,
+            uint dwProcessId
+        );
+
+        [DllImport("kernel32", ExactSpelling = true)]
+        public static extern uint GetCurrentProcessId();
 
         [DllImport("advapi32", ExactSpelling = true)]
         public static extern int GetSecurityDescriptorLength
@@ -66,16 +98,6 @@ namespace Aufbauwerk.Tools.KioskControl
             ref int PrivilegeSetLength,
             out uint GrantedAccess,
             out bool AccessStatus
-        );
-
-        [DllImport("advapi32", CharSet = CharSet.Auto, SetLastError = true)]
-        public static extern bool ConvertSecurityDescriptorToStringSecurityDescriptor
-        (
-            IntPtr SecurityDescriptor,
-            uint RequestedStringSDRevision,
-            uint SecurityInformation,
-            out IntPtr StringSecurityDescriptor,
-            out int StringSecurityDescriptorLen
         );
 
         [DllImport("kernel32", EntryPoint = "RtlMoveMemory")]

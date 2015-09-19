@@ -1,4 +1,4 @@
-﻿/* Copyright (C) 2014, Manuel Meitinger
+﻿/* Copyright (C) 2014-2015, Manuel Meitinger
  * 
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -39,6 +39,20 @@ namespace Aufbauwerk.Tools.KioskControl
     [ServiceBehavior(InstanceContextMode = InstanceContextMode.Single, ConcurrencyMode = ConcurrencyMode.Multiple)]
     public class Service : IContract
     {
+        const string FormatHtml =
+            "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0 Transitional//EN\">\n" +
+            "<html>\n" +
+            "  <head>\n" +
+            "    <title>{0}\\{1} @ {2}</title>\n" +
+            "    <meta http-equiv=\"content-type\" content=\"text/html; charset=UTF-8\"/>\n" +
+            "  </head>\n" +
+            "  <body onload=\"try{{RDPViewer.DisconnectedText=decodeURIComponent('{5}');RDPViewer.Connect(decodeURIComponent('{3}'), '{4}', '');}}catch(e){{alert(e.message);}}\" style=\"margin:0;padding:0;\">\n" +
+            "    <object id=\"RDPViewer\" classid=\"clsid:32be5ed2-5c86-480f-a914-0ff8885a1b3f\" width=\"100%\" height=\"100%\" style=\"border:0;margin:0;padding:0;\"></object>\n" +
+            "  </body>\n" +
+            "</html>";
+        const string FormatJson =
+            @"{{""DomainName"":""{0}"",""UserName"":""{1}"",""MachineName"":""{2}"",""EncodedConnectionString"":""{3}"",""AttendeeName"":""{4}"",""EncodedDisconnectText"":""{5}""}}";
+
         readonly RDPSession session;
         readonly RandomNumberGenerator rng;
 
@@ -135,23 +149,19 @@ namespace Aufbauwerk.Tools.KioskControl
                         // test its attendee remote name
                         if (data.AttendeeRemoteName == attendee.RemoteName)
                         {
-                            // only do a permission check if the initial control level wasn't requested
-                            if (data.InitialControlLevel != RequestedLevel)
+                            // check the known control levels, exit if the permission is missing
+                            switch (RequestedLevel)
                             {
-                                // check the known control levels, exit if the permission is missing
-                                switch (RequestedLevel)
-                                {
-                                    case CTRL_LEVEL.CTRL_LEVEL_NONE:
-                                        break;
-                                    case CTRL_LEVEL.CTRL_LEVEL_VIEW:
-                                        if ((data.SessionRights & SessionRights.View) == 0)
-                                            return;
-                                        break;
-                                    case CTRL_LEVEL.CTRL_LEVEL_INTERACTIVE:
-                                        if ((data.SessionRights & SessionRights.Interact) == 0)
-                                            return;
-                                        break;
-                                }
+                                case CTRL_LEVEL.CTRL_LEVEL_NONE:
+                                    break;
+                                case CTRL_LEVEL.CTRL_LEVEL_VIEW:
+                                    if ((data.SessionRights & SessionRights.View) == 0)
+                                        return;
+                                    break;
+                                case CTRL_LEVEL.CTRL_LEVEL_INTERACTIVE:
+                                    if ((data.SessionRights & SessionRights.Interact) == 0)
+                                        return;
+                                    break;
                             }
 
                             // set the requested control level and exit
@@ -226,13 +236,13 @@ namespace Aufbauwerk.Tools.KioskControl
             }
         }
 
-        string CreateAttendeeName()
+        string CreateAttendeeName(int bytes)
         {
-            // create 127 strong random bytes and return them as hex string
-            var buffer = new byte[127];
+            // create a strong random hex string
+            var buffer = new byte[bytes];
             rng.GetBytes(buffer);
-            var builder = new StringBuilder(254);
-            for (int i = 0; i < buffer.Length; i++)
+            var builder = new StringBuilder(bytes * 2);
+            for (int i = 0; i < bytes; i++)
                 builder.Append(buffer[i].ToString("X2", CultureInfo.InvariantCulture));
             return builder.ToString();
         }
@@ -250,36 +260,28 @@ namespace Aufbauwerk.Tools.KioskControl
             return builder.ToString();
         }
 
-        Stream FinalizeResponse(InvitationData data)
+        Stream FinalizeResponse(InvitationData data, string format)
         {
             // create the connection time-out timer
             data.ConnectionTimer = new Timer(OnConnectionTimedOut, data, Properties.Settings.Default.ConnectionTimeout, TimeSpan.Zero);
 
             // set the caching policy and create the response stream
-            WebOperationContext.Current.OutgoingResponse.Headers[HttpResponseHeader.CacheControl] = "no-cache";
             return new MemoryStream
-            (
-                Encoding.UTF8.GetBytes
-                (
-                    string.Format
-                    (
-                        "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0 Transitional//EN\">\n" +
-                        "<html>\n" +
-                        "  <head>\n" +
-                        "    <title>{0}</title>\n" +
-                        "    <meta http-equiv=\"content-type\" content=\"text/html; charset=UTF-8\"/>\n" +
-                        "  </head>\n" +
-                        "  <body onload=\"try{{RDPViewer.DisconnectedText=decodeURIComponent('{3}');RDPViewer.Connect(decodeURIComponent('{1}'), '{2}', '');}}catch(e){{alert(e.message);}}\" style=\"margin:0;padding:0;\">\n" +
-                        "    <object id=\"RDPViewer\" classid=\"clsid:32be5ed2-5c86-480f-a914-0ff8885a1b3f\" width=\"100%\" height=\"100%\" style=\"border:0;margin:0;padding:0;\"></object>\n" +
-                        "  </body>\n" +
-                        "</html>",
-                        Environment.MachineName,
-                        EscapeString(data.Invitation.ConnectionString),
-                        data.AttendeeRemoteName,
-                        EscapeString(Properties.Settings.Default.DisconnectedText)
-                    )
-                )
-            );
+           (
+               Encoding.UTF8.GetBytes
+               (
+                   string.Format
+                   (
+                       format,
+                       Environment.UserDomainName,
+                       Environment.UserName,
+                       Environment.MachineName,
+                       EscapeString(data.Invitation.ConnectionString),
+                       data.AttendeeRemoteName,
+                       EscapeString(Properties.Settings.Default.DisconnectedText)
+                   )
+               )
+           );
         }
 
         public Stream WebMain(string level)
@@ -297,6 +299,31 @@ namespace Aufbauwerk.Tools.KioskControl
             if (internalLevel == CTRL_LEVEL.CTRL_LEVEL_INVALID)
                 return null;
 
+            // set the headers and format string
+            string formatString;
+            WebOperationContext.Current.OutgoingResponse.Headers[HttpResponseHeader.CacheControl] = "max-age=0, no-cache, no-store";
+            WebOperationContext.Current.OutgoingResponse.Headers[HttpResponseHeader.Pragma] = "no-cache";
+            var formatOption = WebOperationContext.Current.IncomingRequest.UriTemplateMatch.QueryParameters["format"];
+            if (string.Equals(formatOption, "json", StringComparison.OrdinalIgnoreCase))
+            {
+                WebOperationContext.Current.OutgoingResponse.Headers["Access-Control-Allow-Origin"] = "*";
+                WebOperationContext.Current.OutgoingResponse.ContentType = "application/json";
+                formatString = FormatJson;
+            }
+            else if (string.Equals(formatOption, "html", StringComparison.OrdinalIgnoreCase) || formatOption == null)
+            {
+                WebOperationContext.Current.OutgoingResponse.ContentType = "text/html";
+                formatString = FormatHtml;
+            }
+            else
+            {
+                WebOperationContext.Current.OutgoingResponse.StatusCode = HttpStatusCode.BadRequest;
+                return null;
+            }
+
+            // create a 127 bytes long attendee name
+            var attendeeName = CreateAttendeeName(127);
+
             // try to find a suitable invitation
             var user = OperationContext.Current.ServiceSecurityContext.WindowsIdentity.User;
             foreach (var existingData in InvitationData.Snapshot)
@@ -313,8 +340,8 @@ namespace Aufbauwerk.Tools.KioskControl
 
                         // initalize the data and return the stream
                         existingData.Invitation.Revoked = false;
-                        existingData.AttendeeRemoteName = CreateAttendeeName();
-                        return FinalizeResponse(existingData);
+                        existingData.AttendeeRemoteName = attendeeName;
+                        return FinalizeResponse(existingData, formatString);
                     }
                 }
             }
@@ -325,12 +352,12 @@ namespace Aufbauwerk.Tools.KioskControl
                 User = user,
                 SessionRights = sessionRights,
                 InitialControlLevel = internalLevel,
-                AttendeeRemoteName = CreateAttendeeName(),
+                AttendeeRemoteName = attendeeName,
             };
             lock (newData)
             {
                 newData.CreateInvitation(session, null, "", 1);
-                return FinalizeResponse(newData);
+                return FinalizeResponse(newData, formatString);
             }
         }
     }

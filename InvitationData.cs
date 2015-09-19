@@ -1,4 +1,4 @@
-﻿/* Copyright (C) 2014, Manuel Meitinger
+﻿/* Copyright (C) 2014-2015, Manuel Meitinger
  * 
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -55,7 +55,7 @@ namespace Aufbauwerk.Tools.KioskControl
             // retrieve the invitation data
             lock (registered)
             {
-                var data = (InvitationData)null;
+                InvitationData data;
                 registered.TryGetValue(guid, out data);
                 return data;
             }

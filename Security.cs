@@ -1,4 +1,4 @@
-﻿/* Copyright (C) 2014, Manuel Meitinger
+﻿/* Copyright (C) 2014-2015, Manuel Meitinger
  * 
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,6 +18,8 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
 
 namespace Aufbauwerk.Tools.KioskControl
 {
@@ -29,6 +31,58 @@ namespace Aufbauwerk.Tools.KioskControl
         Interact = 0x4,
         ConnectToClient = 0x10,
         CreateVirtualChannel = 0x20,
+    }
+
+    public class ProcessSecurity : NativeObjectSecurity
+    {
+        class ProcessAccessRule : AccessRule
+        {
+            public ProcessAccessRule(IdentityReference identity, int accessMask, bool isInherited, InheritanceFlags inheritanceFlags, PropagationFlags propagationFlags, AccessControlType type)
+                : base(identity, accessMask, isInherited, inheritanceFlags, propagationFlags, type) { }
+        }
+
+        ProcessSecurity(Win32.SafeProcessHandle handle) : base(true, ResourceType.KernelObject, handle, AccessControlSections.Access) { }
+
+        public static void ProtectCurrentProcessFromTerminate()
+        {
+            // denies the current user terminate permissions on the current process
+            using (var process = Win32.OpenProcess(Win32.READ_CONTROL | Win32.WRITE_DAC, false, Win32.GetCurrentProcessId()))
+            {
+                if (process.IsInvalid)
+                    throw new Win32Exception();
+                var security = new ProcessSecurity(process);
+                using (var identity = WindowsIdentity.GetCurrent())
+                    security.AddAccessRule(new ProcessAccessRule(identity.User, Win32.PROCESS_TERMINATE, false, InheritanceFlags.None, PropagationFlags.None, AccessControlType.Deny));
+                security.WriteLock();
+                try { security.Persist(process, AccessControlSections.Access); }
+                finally { security.WriteUnlock(); }
+            }
+        }
+
+        public override Type AccessRightType
+        {
+            get { return typeof(int); }
+        }
+
+        public override AccessRule AccessRuleFactory(IdentityReference identityReference, int accessMask, bool isInherited, InheritanceFlags inheritanceFlags, PropagationFlags propagationFlags, AccessControlType type)
+        {
+            return new ProcessAccessRule(identityReference, accessMask, isInherited, inheritanceFlags, propagationFlags, type);
+        }
+
+        public override Type AccessRuleType
+        {
+            get { return typeof(ProcessAccessRule); }
+        }
+
+        public override AuditRule AuditRuleFactory(System.Security.Principal.IdentityReference identityReference, int accessMask, bool isInherited, InheritanceFlags inheritanceFlags, PropagationFlags propagationFlags, AuditFlags flags)
+        {
+            throw new NotImplementedException();
+        }
+
+        public override Type AuditRuleType
+        {
+            get { throw new NotImplementedException(); }
+        }
     }
 
     public class Security : Win32.ISecurityInformation
@@ -75,6 +129,34 @@ namespace Aufbauwerk.Tools.KioskControl
             else if (!Win32.MakeSelfRelativeSD(sd, clone, ref len))
                 throw new Win32Exception();
             return clone;
+        }
+
+        public static IntPtr SddlToSid(string sddl)
+        {
+            // convert the sddl and set the owner and group
+            var rawSd = new RawSecurityDescriptor(sddl);
+            using (var identity = WindowsIdentity.GetCurrent())
+            {
+                rawSd.Owner = identity.User;
+                rawSd.Group = (SecurityIdentifier)identity.Groups[0].Translate(typeof(SecurityIdentifier));
+            }
+
+            // convert the managed sd into local heap buffer
+            var buffer = new byte[rawSd.BinaryLength];
+            rawSd.GetBinaryForm(buffer, 0);
+            var newSd = Win32.LocalAlloc(Win32.LMEM_FIXED, buffer.Length);
+            if (newSd == IntPtr.Zero)
+                throw new Win32Exception();
+            Marshal.Copy(buffer, 0, newSd, buffer.Length);
+            return newSd;
+        }
+
+        public static string SidToSddl(IntPtr sid)
+        {
+            // return the DACL part of the SID as SDDL
+            var buffer = new byte[Win32.GetSecurityDescriptorLength(sid)];
+            Marshal.Copy(sid, buffer, 0, buffer.Length);
+            return new RawSecurityDescriptor(buffer, 0).GetSddlForm(AccessControlSections.Access);
         }
 
         public static SessionRights GetEffectivePermissions(IntPtr clientToken)

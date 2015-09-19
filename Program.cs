@@ -1,4 +1,4 @@
-﻿/* Copyright (C) 2014, Manuel Meitinger
+﻿/* Copyright (C) 2014-2015, Manuel Meitinger
  * 
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -15,12 +15,9 @@
  */
 
 using System;
-using System.ComponentModel;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
-using System.Security.AccessControl;
-using System.Security.Principal;
 using System.ServiceModel.Web;
 using System.Windows.Forms;
 using System.Xml;
@@ -30,6 +27,9 @@ namespace Aufbauwerk.Tools.KioskControl
 {
     static class Program
     {
+        const string ParamShowSecurityDialog = "/editsecurity";
+        const string ParamOverrideConfig = "/useconfiguration:";
+
         static string configFile = null;
         static IntPtr sd = IntPtr.Zero;
         static DateTime sdTime;
@@ -39,21 +39,7 @@ namespace Aufbauwerk.Tools.KioskControl
             // convert the string to managed sd
             var settings = Properties.Settings.Default;
             settings.Reload();
-            var rawSd = new RawSecurityDescriptor(settings.Security);
-            using (var identity = WindowsIdentity.GetCurrent())
-            {
-                rawSd.Owner = identity.User;
-                rawSd.Group = (SecurityIdentifier)identity.Groups[0].Translate(typeof(SecurityIdentifier));
-            }
-
-            // convert the managed sd into local heap buffer
-            var buffer = new byte[rawSd.BinaryLength];
-            rawSd.GetBinaryForm(buffer, 0);
-            var newSd = Win32.LocalAlloc(Win32.LMEM_FIXED, buffer.Length);
-            if (newSd == IntPtr.Zero)
-                throw new Win32Exception();
-            Marshal.Copy(buffer, 0, newSd, buffer.Length);
-            sd = newSd; // NOTE: we are leaking here, but since the config file won't change a lot it's ok
+            sd = Security.SddlToSid(settings.Security); // NOTE: we are leaking here, but since the config file won't change a lot it's ok
             sdTime = DateTime.UtcNow;
         }
 
@@ -84,25 +70,18 @@ namespace Aufbauwerk.Tools.KioskControl
 
             set
             {
+                // check the sd
+                if (value == IntPtr.Zero)
+                    throw new ArgumentNullException("SecurityDescriptor");
+
                 // ensure initialized
                 if (configFile == null)
                     throw new InvalidOperationException();
 
-                // check the sd and convert it into a string
-                if (value == IntPtr.Zero)
-                    throw new ArgumentNullException("SecurityDescriptor");
-                var str = string.Empty;
-                var strPtr = IntPtr.Zero;
-                var strLen = 0;
-                if (!Win32.ConvertSecurityDescriptorToStringSecurityDescriptor(value, Win32.SDDL_REVISION_1, Win32.DACL_SECURITY_INFORMATION, out strPtr, out strLen))
-                    throw new Win32Exception();
-                try { str = Marshal.PtrToStringAuto(strPtr, strLen).TrimEnd('\0'); }
-                finally { Win32.LocalFree(strPtr); }
-
                 // store the security string
                 var settings = new XmlDocument();
                 settings.Load(configFile);
-                settings.SelectSingleNode(string.Format(@"/configuration/applicationSettings/{0}/setting[@name='Security']/value", typeof(Properties.Settings).FullName)).InnerText = str;
+                settings.SelectSingleNode(string.Format(@"/configuration/applicationSettings/{0}/setting[@name='Security']/value", typeof(Properties.Settings).FullName)).InnerText = Security.SidToSddl(value);
                 settings.Save(configFile);
 
                 // reload the sd
@@ -115,18 +94,17 @@ namespace Aufbauwerk.Tools.KioskControl
         {
             try
             {
-                // enable styles and faster text rendering
+                // enable styles, faster text rendering and protect the current process
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
+                ProcessSecurity.ProtectCurrentProcessFromTerminate();
 
                 // parse the args
-                bool showSecurityDialog = false;
-                string paramShowSecurityDialog = "/editsecurity";
-                string overrideConfig = null;
-                string paramOverrideConfig = "/useconfiguration:";
+                var showSecurityDialog = false;
+                var overrideConfig = (string)null;
                 foreach (var arg in args)
                 {
-                    if (arg.Equals(paramShowSecurityDialog, StringComparison.OrdinalIgnoreCase))
+                    if (arg.Equals(ParamShowSecurityDialog, StringComparison.OrdinalIgnoreCase))
                     {
                         if (!showSecurityDialog)
                         {
@@ -134,15 +112,15 @@ namespace Aufbauwerk.Tools.KioskControl
                             continue;
                         }
                     }
-                    if (arg.StartsWith(paramOverrideConfig, StringComparison.OrdinalIgnoreCase))
+                    else if (arg.StartsWith(ParamOverrideConfig, StringComparison.OrdinalIgnoreCase))
                     {
                         if (overrideConfig == null)
                         {
-                            overrideConfig = arg.Substring(paramOverrideConfig.Length);
+                            overrideConfig = arg.Substring(ParamOverrideConfig.Length);
                             continue;
                         }
                     }
-                    MessageBox.Show(string.Format("{0} [{1}] [{2}]\n\n\n\n{1}\t\tDisplays the security dialog.\n\n{2}\tUse an alternative app config file.", Environment.GetCommandLineArgs()[0], paramShowSecurityDialog, paramOverrideConfig + "<path>"), "Usage", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    MessageBox.Show(string.Format("{0} [{1}] [{2}<path>]\n\n\n\n{1}\t\tDisplays the security dialog.\n\n{2}\tUse an alternative app config file.", Environment.GetCommandLineArgs()[0], ParamShowSecurityDialog, ParamOverrideConfig), "Usage", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     return;
                 }
 
