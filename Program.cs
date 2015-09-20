@@ -120,7 +120,7 @@ namespace Aufbauwerk.Tools.KioskControl
                             continue;
                         }
                     }
-                    MessageBox.Show(string.Format("{0} [{1}] [{2}<path>]\n\n\n\n{1}\t\tDisplays the security dialog.\n\n{2}\tUse an alternative app config file.", Environment.GetCommandLineArgs()[0], ParamShowSecurityDialog, ParamOverrideConfig), "Usage", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    MessageBox.Show(string.Format("{0} [{1}] [{2}<path>]\n\n\n\n{1}\t\tDisplays the security dialog.\n\n{2}\tUse an alternative app config file.", Environment.GetCommandLineArgs()[0], ParamShowSecurityDialog, ParamOverrideConfig), "Usage", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     return;
                 }
 

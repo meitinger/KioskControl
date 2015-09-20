@@ -15,11 +15,14 @@
  */
 
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.ServiceModel;
 using System.ServiceModel.Web;
 using System.Text;
@@ -28,43 +31,290 @@ using RDPCOMAPILib;
 
 namespace Aufbauwerk.Tools.KioskControl
 {
+    [DataContract]
+    public class Connection
+    {
+        [DataMember]
+        public string DomainName { get; set; }
+
+        [DataMember]
+        public string UserName { get; set; }
+
+        [DataMember]
+        public string MachineName { get; set; }
+
+        [DataMember]
+        public string ConnectionString { get; set; }
+
+        [DataMember]
+        public string AttendeeName { get; set; }
+    }
+
     [ServiceContract]
     public interface IContract
     {
-        [WebGet(UriTemplate = "/{level=max}")]
+        [WebGet(UriTemplate = "/")]
         [OperationContract]
-        Stream WebMain(string level);
+        Stream HtmlViewer();
+
+        [WebGet(UriTemplate = "/View")]
+        [OperationContract]
+        Stream View();
+
+        [WebGet(UriTemplate = "/Interact")]
+        [OperationContract]
+        Stream Interact();
+
+        [WebGet(UriTemplate = "/Connect", ResponseFormat = WebMessageFormat.Json)]
+        [OperationContract]
+        Connection Connect();
+
+        [WebGet(UriTemplate = "/ConnectToClient?ConnectionString={connectionString}", ResponseFormat = WebMessageFormat.Json)]
+        [OperationContract]
+        void ConnectToClient(string connectionString);
+
+        [WebGet(UriTemplate = "/CreateVirtualChannel?ChannelName={channelName}", ResponseFormat = WebMessageFormat.Json)]
+        [OperationContract]
+        void CreateVirtualChannel(string channelName);
     }
 
     [ServiceBehavior(InstanceContextMode = InstanceContextMode.Single, ConcurrencyMode = ConcurrencyMode.Multiple)]
     public class Service : IContract
     {
-        const string FormatHtml =
-            "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0 Transitional//EN\">\n" +
-            "<html>\n" +
-            "  <head>\n" +
-            "    <title>{0}\\{1} @ {2}</title>\n" +
-            "    <meta http-equiv=\"content-type\" content=\"text/html; charset=UTF-8\"/>\n" +
-            "  </head>\n" +
-            "  <body onload=\"try{{RDPViewer.DisconnectedText=decodeURIComponent('{5}');RDPViewer.Connect(decodeURIComponent('{3}'), '{4}', '');}}catch(e){{alert(e.message);}}\" style=\"margin:0;padding:0;\">\n" +
-            "    <object id=\"RDPViewer\" classid=\"clsid:32be5ed2-5c86-480f-a914-0ff8885a1b3f\" width=\"100%\" height=\"100%\" style=\"border:0;margin:0;padding:0;\"></object>\n" +
-            "  </body>\n" +
-            "</html>";
-        const string FormatJson =
-            @"{{""DomainName"":""{0}"",""UserName"":""{1}"",""MachineName"":""{2}"",""EncodedConnectionString"":""{3}"",""AttendeeName"":""{4}"",""EncodedDisconnectText"":""{5}""}}";
+        class UserData
+        {
+            class PendingConnection
+            {
+                public Timer TimeoutTimer { get; set; }
+                public CTRL_LEVEL InitialControlLevel { get; set; }
+            }
+
+            readonly static object dataLock = new object();
+            readonly static Dictionary<string, UserData> byConnectionString = new Dictionary<string, UserData>();
+            readonly static Dictionary<SecurityIdentifier, UserData> bySid = new Dictionary<SecurityIdentifier, UserData>();
+            readonly static HashSet<string> issuedAttendeeNames = new HashSet<string>();
+            readonly static RandomNumberGenerator rng = RandomNumberGenerator.Create();
+
+            public static UserData FromAttendee(IRDPSRAPIAttendee attendee)
+            {
+                if (attendee == null)
+                    throw new ArgumentNullException("attendee");
+
+                // get the attendee's invitation
+                var invitation = attendee.Invitation;
+                try
+                {
+                    // find the user data that corresponds to the given connection string
+                    UserData data;
+                    lock (dataLock)
+                        if (!byConnectionString.TryGetValue(invitation.ConnectionString, out data))
+                            return null;
+
+                    // remove a pending connection or ensure the attendee is connected
+                    PendingConnection pendingConnection;
+                    lock (data.connectionLock)
+                    {
+                        if (!data.pendingConnections.TryGetValue(attendee.RemoteName, out pendingConnection))
+                            return data.connectedAttendeeIds.Contains(attendee.Id) ? data : null;
+                        data.pendingConnections.Remove(attendee.RemoteName);
+                        data.connectedAttendeeIds.Add(attendee.Id);
+                    }
+                    pendingConnection.TimeoutTimer.Dispose();
+
+                    // set the initial control level
+                    if (pendingConnection.InitialControlLevel != CTRL_LEVEL.CTRL_LEVEL_INVALID)
+                        attendee.ControlLevel = pendingConnection.InitialControlLevel;
+
+                    // enable all virtual channels
+                    IRDPSRAPIVirtualChannel[] channels;
+                    lock (data.grantedVirtualChannels)
+                    {
+                        channels = new IRDPSRAPIVirtualChannel[data.grantedVirtualChannels.Values.Count];
+                        data.grantedVirtualChannels.Values.CopyTo(channels, 0);
+                    }
+                    foreach (var channel in channels)
+                    {
+                        try { channel.SetAccess(attendee.Id, CHANNEL_ACCESS_ENUM.CHANNEL_ACCESS_ENUM_SENDRECEIVE); }
+                        catch { }
+                    }
+
+                    // return the data
+                    return data;
+                }
+                finally { Marshal.ReleaseComObject(invitation); }
+            }
+
+            public static UserData FromContext(RDPSession session)
+            {
+                if (session == null)
+                    throw new ArgumentNullException("session");
+
+                // get the current identity and effective permissions
+                var identity = OperationContext.Current.ServiceSecurityContext.WindowsIdentity;
+                var effectivePermissions = Security.GetEffectivePermissions(identity.Token);
+                var sid = identity.User;
+                lock (dataLock)
+                {
+                    // try to get an existing user data object
+                    UserData data;
+                    if (!bySid.TryGetValue(sid, out data))
+                    {
+                        // create the invitation and user data
+                        var inviationManager = session.Invitations;
+                        try
+                        {
+                            var invitation = inviationManager.CreateInvitation(null, effectivePermissions.ToString(), "", 0);
+                            try { data = new UserData(invitation.ConnectionString, effectivePermissions); }
+                            finally { Marshal.ReleaseComObject(invitation); }
+                        }
+                        finally { Marshal.ReleaseComObject(inviationManager); }
+
+                        // add it to the dictionaries
+                        byConnectionString.Add(data.ConnectionString, data);
+                        bySid.Add(sid, data);
+                    }
+                    else
+                        // update the user's effective permissions
+                        data.EffectivePermissions = effectivePermissions;
+                    return data;
+                }
+            }
+
+            readonly object connectionLock = new object();
+            readonly Dictionary<string, PendingConnection> pendingConnections = new Dictionary<string, PendingConnection>();
+            readonly HashSet<int> connectedAttendeeIds = new HashSet<int>();
+            readonly Dictionary<string, IRDPSRAPIVirtualChannel> grantedVirtualChannels = new Dictionary<string, IRDPSRAPIVirtualChannel>();
+
+            UserData(string connectionString, SessionRights effectivePermissions)
+            {
+                ConnectionString = connectionString;
+                EffectivePermissions = effectivePermissions;
+            }
+
+            void ConnectionTimeout(object attendeeName)
+            {
+                // remove the pending connection if it still exists
+                PendingConnection pendingConnection;
+                lock (connectionLock)
+                {
+                    if (!pendingConnections.TryGetValue((string)attendeeName, out pendingConnection))
+                        return;
+                    pendingConnections.Remove((string)attendeeName);
+                }
+                pendingConnection.TimeoutTimer.Dispose();
+            }
+
+            public string ConnectionString
+            {
+                get;
+                private set;
+            }
+
+            public SessionRights EffectivePermissions
+            {
+                get;
+                private set;
+            }
+
+            public void GrantChannelAccess(IRDPSRAPIVirtualChannel channel)
+            {
+                if (channel == null)
+                    throw new ArgumentNullException("channel");
+
+                lock (grantedVirtualChannels)
+                {
+                    // do nothing if already granted
+                    if (grantedVirtualChannels.ContainsKey(channel.Name))
+                    {
+                        Marshal.ReleaseComObject(channel);
+                        return;
+                    }
+
+                    // add the channel
+                    grantedVirtualChannels.Add(channel.Name, channel);
+                }
+
+                // grant channel access to all established connections (best effort)
+                int[] attendeeIds;
+                lock (connectionLock)
+                {
+                    attendeeIds = new int[connectedAttendeeIds.Count];
+                    connectedAttendeeIds.CopyTo(attendeeIds, 0);
+                }
+                foreach (var attendeeId in attendeeIds)
+                {
+                    try { channel.SetAccess(attendeeId, CHANNEL_ACCESS_ENUM.CHANNEL_ACCESS_ENUM_SENDRECEIVE); }
+                    catch { }
+                }
+            }
+
+            public string CreateAttendee(RDPSession session, CTRL_LEVEL initialControlLevel = CTRL_LEVEL.CTRL_LEVEL_INVALID)
+            {
+                if (session == null)
+                    throw new ArgumentNullException("session");
+
+                // create a strong random hex string including the user name
+                var userName = OperationContext.Current.ServiceSecurityContext.WindowsIdentity.Name;
+                var buffer = new byte[64];
+                var builder = new StringBuilder(userName.Length + buffer.Length * 2 + 2);
+            TryAgain:
+                rng.GetBytes(buffer);
+                builder.Length = 0;
+                if (userName.IndexOf('\\') == -1)
+                    builder.Append('\\');
+                builder.Append(userName);
+                builder.Append('\\');
+                for (int i = 0; i < buffer.Length; i++)
+                    builder.Append(buffer[i].ToString("X2", CultureInfo.InvariantCulture));
+                var attendeeName = builder.ToString();
+
+                // make sure it doesn't exist
+                lock (issuedAttendeeNames)
+                {
+                    if (issuedAttendeeNames.Contains(attendeeName))
+                        goto TryAgain;
+                    issuedAttendeeNames.Add(attendeeName);
+                }
+
+                // create a new pending connection and return the attendee name
+                lock (connectionLock)
+                {
+                    pendingConnections.Add(attendeeName, new PendingConnection()
+                    {
+                        TimeoutTimer = new Timer(ConnectionTimeout, attendeeName, Properties.Settings.Default.ConnectionTimeout, TimeSpan.Zero),
+                        InitialControlLevel = initialControlLevel,
+                    });
+                }
+                return attendeeName;
+            }
+
+            public bool DestroyAttendee(IRDPSRAPIAttendee attendee)
+            {
+                if (attendee == null)
+                    throw new ArgumentNullException("attendee");
+
+                // either remove a pending or established connction
+                PendingConnection pendingConnection;
+                lock (connectionLock)
+                {
+                    if (!pendingConnections.TryGetValue(attendee.RemoteName, out pendingConnection))
+                        return connectedAttendeeIds.Remove(attendee.Id);
+                    pendingConnections.Remove(attendee.RemoteName);
+                }
+                pendingConnection.TimeoutTimer.Dispose();
+                return true;
+            }
+        }
 
         readonly RDPSession session;
-        readonly RandomNumberGenerator rng;
 
         public Service(RDPSession session)
         {
-            // check the input
             if (session == null)
                 throw new ArgumentNullException("session");
 
-            // store the session and create the default rng
+            // store the session
             this.session = session;
-            this.rng = RandomNumberGenerator.Create();
 
             // hook the session events
             session.OnAttendeeConnected += OnAttendeeConnected;
@@ -72,64 +322,17 @@ namespace Aufbauwerk.Tools.KioskControl
             session.OnAttendeeDisconnected += OnAttendeeDisconnected;
         }
 
-        InvitationData DataFromAttendee(IRDPSRAPIAttendee attendee)
-        {
-            // shortcut for getting the invitation and then the data
-            if (attendee.RemoteName == null)
-                return null;
-            var invitation = attendee.Invitation;
-            try { return InvitationData.FromInvitation(invitation); }
-            finally { Marshal.ReleaseComObject(invitation); }
-        }
-
-        void OnConnectionTimedOut(object state)
-        {
-            var data = (InvitationData)state;
-            lock (data)
-            {
-                // bail if the client has already connected
-                if (data.ConnectionTimer == null)
-                    return;
-
-                // otherwise invalidate the invitation
-                data.Invitation.Revoked = true;
-                data.AttendeeRemoteName = null;
-                data.ConnectionTimer.Dispose();
-                data.ConnectionTimer = null;
-            }
-        }
-
         void OnAttendeeConnected(object pAttendee)
         {
             var attendee = (IRDPSRAPIAttendee)pAttendee;
             try
             {
-                // get the invitation data
-                var data = DataFromAttendee(attendee);
-                if (data != null)
-                {
-                    // lock it
-                    lock (data)
-                    {
-                        // test its attendee remote name and make sure it's still waiting for a connection
-                        if (data.AttendeeRemoteName == attendee.RemoteName && data.ConnectionTimer != null)
-                        {
-                            // revoke the invitation (no further connects)
-                            data.Invitation.Revoked = true;
+                // get the user data
+                var data = UserData.FromAttendee(attendee);
 
-                            // clear the connection timer
-                            data.ConnectionTimer.Dispose();
-                            data.ConnectionTimer = null;
-
-                            // set the initial control level and exit
-                            attendee.ControlLevel = data.InitialControlLevel;
-                            return;
-                        }
-                    }
-                }
-
-                // terminate the invalid connection
-                attendee.TerminateConnection();
+                // terminate connections of unknown attendees
+                if (data == null)
+                    attendee.TerminateConnection();
             }
             finally { Marshal.ReleaseComObject(attendee); }
         }
@@ -139,40 +342,31 @@ namespace Aufbauwerk.Tools.KioskControl
             var attendee = (IRDPSRAPIAttendee)pAttendee;
             try
             {
-                // get the invitation data
-                var data = DataFromAttendee(attendee);
+                // get the user data and check the known control levels
+                var data = UserData.FromAttendee(attendee);
                 if (data != null)
                 {
-                    // lock it
-                    lock (data)
+                    switch (RequestedLevel)
                     {
-                        // test its attendee remote name
-                        if (data.AttendeeRemoteName == attendee.RemoteName)
-                        {
-                            // check the known control levels, exit if the permission is missing
-                            switch (RequestedLevel)
-                            {
-                                case CTRL_LEVEL.CTRL_LEVEL_NONE:
-                                    break;
-                                case CTRL_LEVEL.CTRL_LEVEL_VIEW:
-                                    if ((data.SessionRights & SessionRights.View) == 0)
-                                        return;
-                                    break;
-                                case CTRL_LEVEL.CTRL_LEVEL_INTERACTIVE:
-                                    if ((data.SessionRights & SessionRights.Interact) == 0)
-                                        return;
-                                    break;
-                            }
-
-                            // set the requested control level and exit
-                            attendee.ControlLevel = RequestedLevel;
+                        case CTRL_LEVEL.CTRL_LEVEL_NONE:
+                            if ((data.EffectivePermissions & SessionRights.Connect) == 0)
+                                return;
+                            break;
+                        case CTRL_LEVEL.CTRL_LEVEL_VIEW:
+                            if ((data.EffectivePermissions & SessionRights.View) == 0)
+                                return;
+                            break;
+                        case CTRL_LEVEL.CTRL_LEVEL_INTERACTIVE:
+                            if ((data.EffectivePermissions & SessionRights.Interact) == 0)
+                                return;
+                            break;
+                        default:
                             return;
-                        }
                     }
-                }
 
-                // terminate the invalid connection
-                attendee.TerminateConnection();
+                    // set the requested control level
+                    attendee.ControlLevel = RequestedLevel;
+                }
             }
             finally { Marshal.ReleaseComObject(attendee); }
         }
@@ -186,65 +380,14 @@ namespace Aufbauwerk.Tools.KioskControl
                 var attendee = info.Attendee;
                 try
                 {
-                    // get the invitation data
-                    var data = DataFromAttendee(attendee);
+                    // get the user data and destroy the current attendee
+                    var data = UserData.FromAttendee(attendee);
                     if (data != null)
-                    {
-                        // lock it
-                        lock (data)
-                        {
-                            // clear the remote name if it matches and the viewer has properly connected
-                            if (data.AttendeeRemoteName == attendee.RemoteName && data.ConnectionTimer == null)
-                                data.AttendeeRemoteName = null;
-                        }
-                    }
+                        data.DestroyAttendee(attendee);
                 }
                 finally { Marshal.ReleaseComObject(attendee); }
             }
             finally { Marshal.ReleaseComObject(info); }
-        }
-
-        CTRL_LEVEL ParseControlLevel(SessionRights perms, string level)
-        {
-            // check and convert the control level
-            switch (level.ToUpperInvariant())
-            {
-                case "VIEW":
-                    if ((perms & SessionRights.View) == 0)
-                    {
-                        WebOperationContext.Current.OutgoingResponse.StatusCode = HttpStatusCode.Forbidden;
-                        return CTRL_LEVEL.CTRL_LEVEL_INVALID;
-                    }
-                    return CTRL_LEVEL.CTRL_LEVEL_VIEW;
-                case "INTERACT":
-                    if ((perms & SessionRights.Interact) == 0)
-                    {
-                        WebOperationContext.Current.OutgoingResponse.StatusCode = HttpStatusCode.Forbidden;
-                        return CTRL_LEVEL.CTRL_LEVEL_INVALID;
-                    }
-                    return CTRL_LEVEL.CTRL_LEVEL_INTERACTIVE;
-                case "MAX":
-                    if ((perms & SessionRights.Interact) != 0)
-                        return CTRL_LEVEL.CTRL_LEVEL_INTERACTIVE;
-                    else if ((perms & SessionRights.View) != 0)
-                        return CTRL_LEVEL.CTRL_LEVEL_VIEW;
-                    else
-                        return CTRL_LEVEL.CTRL_LEVEL_NONE;
-                default:
-                    WebOperationContext.Current.OutgoingResponse.StatusCode = HttpStatusCode.BadRequest;
-                    return CTRL_LEVEL.CTRL_LEVEL_INVALID;
-            }
-        }
-
-        string CreateAttendeeName(int bytes)
-        {
-            // create a strong random hex string
-            var buffer = new byte[bytes];
-            rng.GetBytes(buffer);
-            var builder = new StringBuilder(bytes * 2);
-            for (int i = 0; i < bytes; i++)
-                builder.Append(buffer[i].ToString("X2", CultureInfo.InvariantCulture));
-            return builder.ToString();
         }
 
         string EscapeString(string s)
@@ -260,105 +403,134 @@ namespace Aufbauwerk.Tools.KioskControl
             return builder.ToString();
         }
 
-        Stream FinalizeResponse(InvitationData data, string format)
+        void DisableCaching()
         {
-            // create the connection time-out timer
-            data.ConnectionTimer = new Timer(OnConnectionTimedOut, data, Properties.Settings.Default.ConnectionTimeout, TimeSpan.Zero);
-
-            // set the caching policy and create the response stream
-            return new MemoryStream
-           (
-               Encoding.UTF8.GetBytes
-               (
-                   string.Format
-                   (
-                       format,
-                       Environment.UserDomainName,
-                       Environment.UserName,
-                       Environment.MachineName,
-                       EscapeString(data.Invitation.ConnectionString),
-                       data.AttendeeRemoteName,
-                       EscapeString(Properties.Settings.Default.DisconnectedText)
-                   )
-               )
-           );
-        }
-
-        public Stream WebMain(string level)
-        {
-            // get the permissions and check if the client can connect
-            var sessionRights = Security.GetEffectivePermissions(OperationContext.Current.ServiceSecurityContext.WindowsIdentity.Token);
-            if ((sessionRights & SessionRights.Connect) == 0)
-            {
-                WebOperationContext.Current.OutgoingResponse.StatusCode = HttpStatusCode.Forbidden;
-                return null;
-            }
-
-            // get the internal control level
-            var internalLevel = ParseControlLevel(sessionRights, level);
-            if (internalLevel == CTRL_LEVEL.CTRL_LEVEL_INVALID)
-                return null;
-
-            // set the headers and format string
-            string formatString;
+            // restrict caching in the response headers
             WebOperationContext.Current.OutgoingResponse.Headers[HttpResponseHeader.CacheControl] = "max-age=0, no-cache, no-store";
             WebOperationContext.Current.OutgoingResponse.Headers[HttpResponseHeader.Pragma] = "no-cache";
-            var formatOption = WebOperationContext.Current.IncomingRequest.UriTemplateMatch.QueryParameters["format"];
-            if (string.Equals(formatOption, "json", StringComparison.OrdinalIgnoreCase))
+        }
+
+        void DemandPermission(SessionRights rights)
+        {
+            // throw an access denied permission if the rights aren't granted
+            if (!Security.HasPermission(OperationContext.Current.ServiceSecurityContext.WindowsIdentity.Token, rights))
             {
-                WebOperationContext.Current.OutgoingResponse.Headers["Access-Control-Allow-Origin"] = "*";
-                WebOperationContext.Current.OutgoingResponse.ContentType = "application/json";
-                formatString = FormatJson;
+                WebOperationContext.Current.OutgoingResponse.StatusCode = HttpStatusCode.Forbidden;
+                throw new UnauthorizedAccessException();
             }
-            else if (string.Equals(formatOption, "html", StringComparison.OrdinalIgnoreCase) || formatOption == null)
+        }
+
+        Stream IContract.View()
+        {
+            // ensure view permissions and return the viewer
+            DemandPermission(SessionRights.View);
+            return HtmlViewer(CTRL_LEVEL.CTRL_LEVEL_VIEW);
+        }
+
+        Stream IContract.Interact()
+        {
+            // ensure interact permissions and return the viewer
+            DemandPermission(SessionRights.Interact);
+            return HtmlViewer(CTRL_LEVEL.CTRL_LEVEL_INTERACTIVE);
+        }
+
+        public Stream HtmlViewer()
+        {
+            // get the highest control level and return the viewer
+            var permission = Security.GetEffectivePermissions(OperationContext.Current.ServiceSecurityContext.WindowsIdentity.Token);
+            return HtmlViewer
+            (
+                (permission & SessionRights.Interact) != 0 ? CTRL_LEVEL.CTRL_LEVEL_INTERACTIVE :
+                (permission & SessionRights.View) != 0 ? CTRL_LEVEL.CTRL_LEVEL_VIEW :
+                (permission & SessionRights.Connect) != 0 ? CTRL_LEVEL.CTRL_LEVEL_NONE :
+                CTRL_LEVEL.CTRL_LEVEL_INVALID
+            );
+        }
+
+        public Stream HtmlViewer(CTRL_LEVEL controlLevel)
+        {
+            // ensure connect rights and return the viewer
+            DemandPermission(SessionRights.Connect);
+            DisableCaching();
+            var data = UserData.FromContext(session);
+            return new MemoryStream
+            (
+                Encoding.UTF8.GetBytes
+                (
+                    string.Format
+                    (
+                         "<!DOCTYPE HTML PUBLIC \"-//W3C//DTD HTML 4.0 Transitional//EN\">\n" +
+                         "<html>\n" +
+                         "  <head>\n" +
+                         "    <title>{0}\\{1} @ {2}</title>\n" +
+                         "    <meta http-equiv=\"content-type\" content=\"text/html; charset=UTF-8\"/>\n" +
+                         "  </head>\n" +
+                         "  <body onload=\"try{{RDPViewer.DisconnectedText=decodeURIComponent('{5}');RDPViewer.Connect(decodeURIComponent('{3}'),decodeURIComponent('{4}'),'');}}catch(e){{alert(e.message);}}\" style=\"margin:0;padding:0;\">\n" +
+                         "    <object id=\"RDPViewer\" classid=\"clsid:32be5ed2-5c86-480f-a914-0ff8885a1b3f\" width=\"100%\" height=\"100%\" style=\"border:0;margin:0;padding:0;\"></object>\n" +
+                         "  </body>\n" +
+                         "</html>",
+                         Environment.UserDomainName,
+                         Environment.UserName,
+                         Environment.MachineName,
+                         EscapeString(data.ConnectionString),
+                         EscapeString(data.CreateAttendee(session, controlLevel)),
+                         EscapeString(Properties.Settings.Default.DisconnectedText)
+                     )
+                )
+            );
+        }
+
+        public Connection Connect()
+        {
+            // check the permission and return the connection
+            DemandPermission(SessionRights.Connect);
+            DisableCaching();
+            var data = UserData.FromContext(session);
+            return new Connection()
             {
-                WebOperationContext.Current.OutgoingResponse.ContentType = "text/html";
-                formatString = FormatHtml;
-            }
-            else
+                DomainName = Environment.UserDomainName,
+                UserName = Environment.UserName,
+                MachineName = Environment.MachineName,
+                ConnectionString = data.ConnectionString,
+                AttendeeName = data.CreateAttendee(session),
+            };
+        }
+
+        public void ConnectToClient(string connectionString)
+        {
+            if (connectionString == null)
             {
                 WebOperationContext.Current.OutgoingResponse.StatusCode = HttpStatusCode.BadRequest;
-                return null;
+                throw new ArgumentNullException("connectionString");
             }
 
-            // create a 127 bytes long attendee name
-            var attendeeName = CreateAttendeeName(127);
+            // check the permission and connect to the client
+            DemandPermission(SessionRights.ConnectToClient);
+            session.ConnectToClient(connectionString);
+        }
 
-            // try to find a suitable invitation
-            var user = OperationContext.Current.ServiceSecurityContext.WindowsIdentity.User;
-            foreach (var existingData in InvitationData.Snapshot)
+        public void CreateVirtualChannel(string channelName)
+        {
+            if (channelName == null)
             {
-                // check if the user, permissions and control level match
-                if (existingData.User == user && existingData.SessionRights == sessionRights && existingData.InitialControlLevel == internalLevel)
-                {
-                    // lock the data
-                    lock (existingData)
-                    {
-                        // skip this invitation if it's already assigned
-                        if (existingData.AttendeeRemoteName != null)
-                            continue;
-
-                        // initalize the data and return the stream
-                        existingData.Invitation.Revoked = false;
-                        existingData.AttendeeRemoteName = attendeeName;
-                        return FinalizeResponse(existingData, formatString);
-                    }
-                }
+                WebOperationContext.Current.OutgoingResponse.StatusCode = HttpStatusCode.BadRequest;
+                throw new ArgumentNullException("connectionString");
             }
 
-            // no matching invitation found, create a new one and return the response
-            var newData = new InvitationData()
+            // check the permission and get the channel manager
+            DemandPermission(SessionRights.CreateVirtualChannel);
+            var manager = session.VirtualChannelManager;
+            try
             {
-                User = user,
-                SessionRights = sessionRights,
-                InitialControlLevel = internalLevel,
-                AttendeeRemoteName = attendeeName,
-            };
-            lock (newData)
-            {
-                newData.CreateInvitation(session, null, "", 1);
-                return FinalizeResponse(newData, formatString);
+                // get or create the channel
+                IRDPSRAPIVirtualChannel channel;
+                try { channel = manager[channelName]; }
+                catch { channel = manager.CreateVirtualChannel(channelName, CHANNEL_PRIORITY.CHANNEL_PRIORITY_MED, 0); }
+
+                // grant access to the client
+                UserData.FromContext(session).GrantChannelAccess(channel);
             }
+            finally { Marshal.ReleaseComObject(manager); }
         }
     }
 }

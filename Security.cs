@@ -90,7 +90,7 @@ namespace Aufbauwerk.Tools.KioskControl
         static readonly Win32.GENERIC_MAPPING genericMapping = new Win32.GENERIC_MAPPING()
         {
             GenericRead = (uint)(SessionRights.Connect | SessionRights.View),
-            GenericWrite = (uint)(SessionRights.Connect | SessionRights.View | SessionRights.Interact),
+            GenericWrite = (uint)(SessionRights.Connect | SessionRights.Interact),
             GenericExecute = (uint)(SessionRights.Connect | SessionRights.CreateVirtualChannel),
             GenericAll = (uint)(SessionRights.Connect | SessionRights.View | SessionRights.Interact | SessionRights.ConnectToClient | SessionRights.CreateVirtualChannel),
         };
@@ -159,16 +159,28 @@ namespace Aufbauwerk.Tools.KioskControl
             return new RawSecurityDescriptor(buffer, 0).GetSddlForm(AccessControlSections.Access);
         }
 
-        public static SessionRights GetEffectivePermissions(IntPtr clientToken)
+        public static bool HasPermission(IntPtr clientToken, SessionRights desiredAccess)
         {
             // check the token
             if (clientToken == IntPtr.Zero)
                 throw new ArgumentNullException("clientToken");
 
-            // if there is no dacl, grant everything
-            var sd = Program.SecurityDescriptor;
-            if ((GetSDControl(sd) & Win32.SE_DACL_PRESENT) == 0)
-                return (SessionRights)genericMapping.GenericAll;
+            // check if the rights are granted or throw an error
+            var mapping = genericMapping;
+            var dummy = new Win32.PRIVILEGE_SET();
+            var dummyLen = Marshal.SizeOf(typeof(Win32.PRIVILEGE_SET));
+            var granted = 0U;
+            var result = false;
+            if (!Win32.AccessCheck(Program.SecurityDescriptor, clientToken, (uint)desiredAccess, ref mapping, ref dummy, ref dummyLen, out granted, out result))
+                throw new Win32Exception();
+            return result;
+        }
+
+        public static SessionRights GetEffectivePermissions(IntPtr clientToken)
+        {
+            // check the token
+            if (clientToken == IntPtr.Zero)
+                throw new ArgumentNullException("clientToken");
 
             // get the maximum allowed permissions
             var mapping = genericMapping;
@@ -176,9 +188,9 @@ namespace Aufbauwerk.Tools.KioskControl
             var dummyLen = Marshal.SizeOf(typeof(Win32.PRIVILEGE_SET));
             var granted = 0U;
             var result = false;
-            if (!Win32.AccessCheck(sd, clientToken, Win32.MAXIMUM_ALLOWED, ref mapping, ref dummy, ref dummyLen, out granted, out result))
+            if (!Win32.AccessCheck(Program.SecurityDescriptor, clientToken, Win32.MAXIMUM_ALLOWED, ref mapping, ref dummy, ref dummyLen, out granted, out result))
                 throw new Win32Exception();
-            return result ? (SessionRights)granted : 0;
+            return (SessionRights)granted;
         }
 
         public static void ShowEditDialog()
@@ -248,7 +260,7 @@ namespace Aufbauwerk.Tools.KioskControl
                     new Win32.SI_ACCESS()
                     {
                          pguid = IntPtr.Zero,
-                         mask = genericMapping.GenericWrite,
+                         mask = genericMapping.GenericRead | genericMapping.GenericWrite,
                          pszName = Marshal.StringToHGlobalUni("Interactive"),
                          dwFlags = Win32.SI_ACCESS_GENERAL
                     },

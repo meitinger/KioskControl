@@ -44,8 +44,9 @@ namespace Aufbauwerk.Tools.KioskControl
         public const uint MAXIMUM_ALLOWED = 0x02000000;
         public const uint LMEM_FIXED = 0x0000;
         public const int PROCESS_TERMINATE = 0x0001;
-        public const uint WRITE_DAC =0x00040000;
+        public const uint WRITE_DAC = 0x00040000;
         public const uint READ_CONTROL = 0x00020000;
+        public const int ANYSIZE_ARRAY = 1;
 
         [ReliabilityContract(Consistency.WillNotCorruptState, Cer.Success)]
         [DllImport("kernel32", ExactSpelling = true, SetLastError = true)]
@@ -142,7 +143,7 @@ namespace Aufbauwerk.Tools.KioskControl
             public int HighPart;
         }
 
-        [StructLayout(LayoutKind.Sequential)]
+        [StructLayout(LayoutKind.Sequential, Pack = 4)]
         public struct LUID_AND_ATTRIBUTES
         {
             public LUID Luid;
@@ -154,7 +155,8 @@ namespace Aufbauwerk.Tools.KioskControl
         {
             public int PrivilegeCount;
             public uint Control;
-            public LUID_AND_ATTRIBUTES Privilege;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = ANYSIZE_ARRAY)]
+            public LUID_AND_ATTRIBUTES[] Privilege;
         }
 
         [StructLayout(LayoutKind.Sequential)]

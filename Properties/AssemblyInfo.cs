@@ -23,4 +23,4 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyProduct("Aufbauwerk Kiosk Control")]
 [assembly: AssemblyCopyright("Copyright © 2014-2015 by Manuel Meitinger")]
 [assembly: ComVisible(false)]
-[assembly: AssemblyVersion("1.1.0.1")]
+[assembly: AssemblyVersion("1.2.0.1")]
