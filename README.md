@@ -58,13 +58,14 @@ Class Rooms
 If you want to watch multiple stations it may be cumbersome to have several
 Internet Explorer windows open, refreshing and watching for new logons.
 That's why we've created `Classroom.htm`, an *AngularJS* local web application
-that can be configured by a *JSON* file and displays all configured computers
-next to one another on continuous reconnect loop.
+(configured by a local *JSON* file) that displays all multiple sessions next to
+one another and continuously monitors the connection state, performing a
+reconnect if nessary.
 
-The default configuration file is expected to be in the same folder and the
-same name plus `.json`, but the path can be specified in the query path. In
-other words the default query path for `file://server/share/Classroom.htm`
-would be `?Classroom.htm.json`.
+The default configuration file is expected to be in the same folder and have
+the same name as the `.htm` file plus a `.json` ending, but you can specify an
+entirely different file in the query string. In other words, the default query
+string for `file://server/share/Classroom.htm` would be `?Classroom.htm.json`.
 
 The repository contains a sample file defining all the required settings:
 - *title*: The Internet Explorer window title.
@@ -72,4 +73,6 @@ The repository contains a sample file defining all the required settings:
 - *columns*: The amount of viewers to display next to each other.
 - *ratio*: The viewers' aspect ratio of `height / width`.
 - *reconnect*: The number of seconds to wait before trying to reconnect.
-To get started, all you need to change is the *computer* settings.
+
+To get started, all you need to change is the *computers* settings and run the
+`Classroom.htm` file.
