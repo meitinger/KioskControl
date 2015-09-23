@@ -24,6 +24,9 @@ using System.Runtime.Serialization;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.ServiceModel;
+using System.ServiceModel.Channels;
+using System.ServiceModel.Description;
+using System.ServiceModel.Dispatcher;
 using System.ServiceModel.Web;
 using System.Text;
 using System.Threading;
@@ -78,7 +81,41 @@ namespace Aufbauwerk.Tools.KioskControl
         void CreateVirtualChannel(string channelName);
     }
 
+    public class CorsSupportAttribute : Attribute, IServiceBehavior
+    {
+        class Inspector : IDispatchMessageInspector
+        {
+            public readonly static Inspector Instance = new Inspector();
+
+            Inspector() { }
+
+            public object AfterReceiveRequest(ref Message request, IClientChannel channel, InstanceContext instanceContext)
+            {
+                return request.Properties["httpRequest"];
+            }
+
+            public void BeforeSendReply(ref Message reply, object correlationState)
+            {
+                var origin = ((HttpRequestMessageProperty)correlationState).Headers["Origin"];
+                var headers = ((HttpResponseMessageProperty)reply.Properties["httpResponse"]).Headers;
+                headers["Access-Control-Allow-Origin"] = origin ?? "*";
+                headers["Access-Control-Allow-Credentials"] = "true";
+            }
+        }
+
+        public void AddBindingParameters(ServiceDescription serviceDescription, ServiceHostBase serviceHostBase, System.Collections.ObjectModel.Collection<ServiceEndpoint> endpoints, System.ServiceModel.Channels.BindingParameterCollection bindingParameters) { }
+        public void Validate(ServiceDescription serviceDescription, ServiceHostBase serviceHostBase) { }
+
+        public void ApplyDispatchBehavior(ServiceDescription serviceDescription, ServiceHostBase serviceHostBase)
+        {
+            foreach (ChannelDispatcher channelDispatcher in serviceHostBase.ChannelDispatchers)
+                foreach (EndpointDispatcher endpointDispatcher in channelDispatcher.Endpoints)
+                    endpointDispatcher.DispatchRuntime.MessageInspectors.Add(Inspector.Instance);
+        }
+    }
+
     [ServiceBehavior(InstanceContextMode = InstanceContextMode.Single, ConcurrencyMode = ConcurrencyMode.Multiple)]
+    [CorsSupport]
     public class Service : IContract
     {
         class UserData

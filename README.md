@@ -37,8 +37,8 @@ The following settings can be configured in the `KioskControl.exe.config` file:
 - *Security*: A SDDL string that stores the access control list for the kiosk
   session. This setting can also be edited by running the program with the
   `/editsecurity` switch, which displays the familiar Windows security dialog.
-- *ConnectionTimeout*: The amount of time a client has before its token becomes
-  invalid.
+- *ConnectionTimeout*: The amount of time a client has to connect before its
+  token becomes invalid.
 - *DisconnectedText*: The message that is displayed if the connection is lost.
 
 The *Windows Communication Framework* configuration is also stored within this
@@ -52,3 +52,24 @@ Requirements
 ------------
 Since the program relies on the Windows Desktop Sharing API, at least Windows
 Vista or higher is required, on the kiosk terminal as well as on the client.
+
+Class Rooms
+-----------
+If you want to watch multiple stations it may be cumbersome to have several
+Internet Explorer windows open, refreshing and watching for new logons.
+That's why we've created `Classroom.htm`, an *AngularJS* local web application
+that can be configured by a *JSON* file and displays all configured computers
+next to one another on continuous reconnect loop.
+
+The default configuration file is expected to be in the same folder and the
+same name plus `.json`, but the path can be specified in the query path. In
+other words the default query path for `file://server/share/Classroom.htm`
+would be `?Classroom.htm.json`.
+
+The repository contains a sample file defining all the required settings:
+- *title*: The Internet Explorer window title.
+- *computers*: An array of base urls. (Don't append `view` or `interact`.)
+- *columns*: The amount of viewers to display next to each other.
+- *ratio*: The viewers' aspect ratio of `height / width`.
+- *reconnect*: The number of seconds to wait before trying to reconnect.
+To get started, all you need to change is the *computer* settings.

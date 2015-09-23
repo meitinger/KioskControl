@@ -1,0 +1,7 @@
+{
+    "title": "Kiosk PCs",
+    "computers": ["http://localhost/Temporary_Listen_Addresses/kiosk"],
+    "columns": 5,
+    "ratio": 0.75,
+    "reconnect": 30
+}
