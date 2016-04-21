@@ -1,4 +1,4 @@
-﻿/* Copyright (C) 2014-2015, Manuel Meitinger
+﻿/* Copyright (C) 2014-2016, Manuel Meitinger
  * 
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -21,6 +21,6 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyDescription("Remote viewer and control for interactive Windows session using Windows Desktop Sharing.")]
 [assembly: AssemblyCompany("AufBauWerk - Unternehmen für junge Menschen")]
 [assembly: AssemblyProduct("Aufbauwerk Kiosk Control")]
-[assembly: AssemblyCopyright("Copyright © 2014-2015 by Manuel Meitinger")]
+[assembly: AssemblyCopyright("Copyright © 2014-2016 by Manuel Meitinger")]
 [assembly: ComVisible(false)]
-[assembly: AssemblyVersion("1.2.0.2")]
+[assembly: AssemblyVersion("1.2.0.3")]

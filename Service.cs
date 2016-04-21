@@ -1,4 +1,4 @@
-﻿/* Copyright (C) 2014-2015, Manuel Meitinger
+﻿/* Copyright (C) 2014-2016, Manuel Meitinger
  * 
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -490,6 +490,7 @@ namespace Aufbauwerk.Tools.KioskControl
             DemandPermission(SessionRights.Connect);
             DisableCaching();
             var data = UserData.FromContext(session);
+            WebOperationContext.Current.OutgoingResponse.ContentType = "text/html; charset=UTF-8";
             return new MemoryStream
             (
                 Encoding.UTF8.GetBytes
